@@ -5,7 +5,7 @@ mongo
 
 php_mongo.dll文件，版本是：1.4.5
 
-
+windows下mongo扩展包：http://pan.baidu.com/s/1ntBL76L
 
 
 参考文档：
