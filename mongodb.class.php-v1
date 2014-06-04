@@ -1,0 +1,459 @@
+<?php
+class myMongoDB {
+	private $_mongo= NULL;//实例化对象
+	private $_db   = NULL;//数据库
+	private $_user;
+	private $_pwd;
+	private $_host;
+	private $_port;
+
+	private $_cmd  = '$';
+
+	private $_conMap = array(
+		'<'   => 'lt',
+		'<='  => 'lte',
+		'>'   => 'gt',
+		'>='  => 'gte',
+		'!'   => 'ne',
+		'%'   => 'mod',
+		'in'  => 'in',
+		'nin' => 'nin',
+		'or'  => 'or',
+		'not' => 'not'
+	);
+	//mongodb://用户名:密码 @地址:端口/默认指定数据库”,参数
+	public function __construct($user, $pwd, $host, $port, $db, $cmd='') {
+		$server = sprintf(
+			"mongodb://%s:%s@%s:%s/%s", 
+			$user, 
+			$pwd, 
+			$host, 
+			$port, 
+			$db
+		);
+
+		$this->_mongo = new Mongo($server, array('connect' => true));
+		if (empty($cmd) || array_key_exists($cmd, $this->_condMap)) {
+			$this->cmd = '&';
+		}
+	}
+	/**
+	 * 插入数据
+	 * 
+	 * @param string  $collectionName 集合名称
+	 * @param array   $values         需要插入的数据集合数组
+	 * @param mix     $w              default 0 参考http://www.php.net/manual/zh/mongo.writeconcerns.php
+	 * @param boolean $j              The write will be acknowledged by primary and the journal flushed to disk
+	 * 参数safe不建议使用
+	 * 
+	 * @return boolean
+	 */
+	public function insert($collectionName, $values, $w=0, $j=false, $fsync=false) {
+		$collection = $this->_getCollection($collectionName);
+		try {
+			$ret = $collection -> insert($values, array('w' =>$w, 'j' => $j, 'fsync'=>$fsync));
+			var_dump($ret);
+			return true;
+		} catch(MongoCursorException $e) {
+			return false;
+		}
+	}
+	/**
+	 * 保存一个文档到集合
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param mixed  $values         需要保存的数据 如果用的是 Object，它不能有 protected 或 private 的属性
+	 * @param integer $w             default 0
+	 * @param boolean $fsync         default false 如果为true会覆盖w=0   
+	 * @param boolean $j             default false 如果为true会覆盖w=0   
+	 * 
+	 * @return miexed
+	 */
+	public function save($collectionName, $values, $w=0, $fsync=false, $j=false) {
+		// 处理 '_id' 字段 转换成对象
+        $values = $this->_parseId($values);
+        $opt = array(
+        	'w' => $w,
+        	'fsync' => $fsync,
+        	'j' => $j
+        );
+        $ret = $this->_getCollection($collectionName)->save($values, $opt);
+
+        return $ret;
+	}
+	/**
+	 * 删除集合中的文档
+	 * 
+	 * @param string  $collectionName 集合名称
+	 * @param array   $conditions     执行删除操作的条件
+	 * @param boolean $justOne        默认false，执行删除的数据他的限制数量，true仅仅删除一条
+	 * @param mix     $w              default 0 参考http://www.php.net/manual/zh/mongo.writeconcerns.php
+	 * @param boolean $fsync           default false 如果为true会覆盖w=0 
+	 * @param boolean $j              The write will be acknowledged by primary and the journal flushed to disk
+	 * 
+	 * @return boolean
+	 */
+	public function delete($collectionName, $conditions=array(), $justOne=false, $w=0, $fsync=false, $j=false ) {
+		$conditions = $this->_parseId($conditions);
+		$opts = array(
+			'justOne' => $justOne,
+			'w' => 1,
+			'fsync' => $fsync,
+			'j' => $j
+		);
+
+		$collection = $this->_getCollection($collectionName, $opts);
+		$collection->remove(array('_id' => new MongoId('537ef40f80dfd3540d000007')), $opts);
+		return $collection->remove($conditions);
+	}
+	/**
+	 * 修改数据
+	 * 
+	 * @param string  $collectionName 集合名称
+	 * @param array   $newValues      修改的目标值
+	 * @param array   $conditions     查询条件
+	 * @param string  $opt            修改指定字段
+	 * @param boolean $upAll          更新所有符合条件的记录
+	 * @param boolean $upsert        
+ 	 * @param boolean $justOne        默认false，执行删除的数据他的限制数量，true仅仅删除一条
+	 * @param mix     $w              default 0 参考http://www.php.net/manual/zh/mongo.writeconcerns.php
+ 	 * @param boolean $fsync          default false 如果为true会覆盖w=0
+	 * @param boolean $j    
+	 *         
+	 * @return boolean    
+	 */
+	public function midify($collectionName, $newValues, $conditions=array(), $opt='set', $upAll=true, $upsert=false, $w=0, $fsync=false, $j=false) {
+		$conditions = $this->_parseId($conditions);
+		$collection = $this->_getCollection($collectionName);
+		if ($opt != 'replace') {
+			$newValues = array($this->getCmd($opt) => $newValues);
+		}
+		$options = array(
+			'upsert' => $upsert,
+			'multiple' => $upAll,
+			'w' =>$w,
+			'fsync' => $fsync,
+			'j' => $j
+		);
+
+		return $collection -> update($conditions, $newValues, $options);
+	}
+	/**
+	 * 获取数据
+	 * 
+	 * @param string  $collectionName 集合名称
+	 * @param array   $fields         需要返回数据的字段
+	 * @param array   $conditions     查询条件
+	 * @param array   $sort           排序
+	 * @param integer $limit          查询的条数
+	 * @param integer $skip           跳过的条数
+	 * 
+	 * @return array
+	 */
+	public function find($collectionName, $conditions=array(), $fields=array(), $sort=array(), $limit=0, $skip=0) {
+		$collection = $this->_getCollection($collectionName);
+		$conditions = $this->_parseId($conditions);
+		$cursor = $collection -> find($conditions, $fields);
+		if ($sort) {
+			$cursor->sort($sort);
+		}
+		if ($skip) {
+			$cursor->skip($skip);
+		}
+		if ($limit > 0) {
+			$cursor -> limit($limit);
+		}
+		$result = array();
+		foreach ($cursor as $data) {
+			$result[] = $this->_parseArr($data);
+		}
+
+		return $result;
+	}
+	/**
+	 * 获取一条数据
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array  $conditions     查询条件
+	 * @param array  $fields         结果集中的字段
+	 * 
+	 * @return array
+	 */
+	public function findOne($collectionName, $conditions=array(), $fields=array()) {
+		$collection = $this->_getCollection($collectionName);
+		$conditions = $this->_parseId($conditions);
+		return $this->_parseArr($collection->findOne($conditions, $fields));
+	}
+	/**
+	 * 获取某一个字段的值
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array  $conditions     查询条件
+	 * @param string $field          需要返回值的字段名称
+	 * 
+	 * @return mixed
+	 */
+	public function getFieldVal($collectionName, $conditions=array(), $field = '_id') {
+		$data = $this->findOne($collectionName, $conditions=array(), array($field));
+		return isset($data[$field]) ? $data[$field] : false;
+	}
+	/**
+	 * 获取某一个字段的值
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array  $conditions     查询条件
+	 * @param string $field          需要返回值的字段名称
+	 * 
+	 * @return array
+	 */
+	public function getFieldCol($collectionName, $conditions=array(), $field='_id') {
+		$data = array();
+		$datas = $this->find($collectionName, $conditions, array($field));
+		if (is_array($datas)) {
+			foreach ($datas as $tmpData) {
+				$data[] = $tmpData[$field];
+			}
+		}
+
+		return $data;
+	}
+
+	/**
+	 *  获取集合里指定键的不同值的列表
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array  $condition      查询条件
+	 * @param string $field          指定的字段
+	 * 
+	 * @return array
+	 */
+	public function distinct($collectionName, $condition=array(), $field='_id') {
+		$collections = $this->_getCollection($collectionName);
+		$data = $collections -> distinct($field, $condition);
+		return $data;
+	}
+	/**
+	 * 获取对应的数据
+	 * @param string $collectionName 集合名称
+	 * @param array  $conditions     查询条件
+	 * @param string $field          需要获取值的字段
+	 * 
+	 * @return array
+	 */
+	public function getFieldCols($collectionName, $conditions=array(), $field='_id') {
+		$data = array();
+		$datas = $this->find($collectionName, $conditions, array($field));
+		if (is_array($datas)) {
+			foreach ($datas as $tmpData) {
+				$k = $tmpData[$field];
+				$data[][$k] = $tmpData;
+			}
+		}
+
+		return $data;
+	}
+	/**
+	 * 返回集合中的文档数量
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array   $conditions    查询条件
+	 * 
+	 * @return int
+	 */
+	public function count($collectionName, $conditions=array()) {
+		$collection = $this->_getCollection($collectionName);
+		$conditions = $this->_parseId($conditions);
+
+		return $collection->count($conditions);
+
+		//return $this->_getCollection($collectionName)->count($conditions);
+	}
+	/**
+	 * 修改数据并返回
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param array  $conditions     查询条件
+	 * @param array  $values         修改的值
+	 * @param array  $fileds         需要返回的字段
+	 * @param array  $opts           方法的操作设置
+	 * options的值有一下几个 array('sort'=>array('group_id'=>-1), new=> true)
+	 * 	sort     
+	 * 	remove default false
+	 *  new    default false
+	 *  upsert default false
+	 * 
+	 * @return array
+	 */
+	public function findAndModify($collectionName,$conditions, $values=array(), $fileds=array(), $opts=array()) {
+		//$collection = $this->_getCollection($collectionName);
+		$this->selectDb($collectionName);
+		$conditions = $this->_parseId($conditions);
+		$data = $this->_db->command(array('findAndModify'=>'zhl', 'query'=>$conditions, 'limit'=>1, 'update'=>array('$inc'=>$values)));
+		//$data = $collection->findAndModify($conditions, $values, $fields, $opts);
+		return $data;
+
+	}
+	/**
+	 * 建立索引
+	 * 
+	 * @param string $collectionName 集合名称
+	 * @param string $field          需要建立索引的字段
+	 * @param string $sort           排序方式
+	 * @param array  $opts           操作限定项
+	 * 
+	 * unique 只适用于升序、降序索引 default false
+	 * 
+	 * @return bool
+	 */
+	public function ensureIndex($collectionName, $fields, $sort="DESC", $opts=array()) {
+		$collection = $this->_getCollection($collectionName);
+		if (empty($fields)) {
+			return false;
+		}
+		if (is_string($fields)) {  //输入字符串
+			if (strtolower($sort) == 'desc') {
+				$sortTmp = -1;
+			} else if (strtolower($sort) == 'asc') {
+				$sortTmp = 1;
+			} else {
+				return false;
+			} 
+			$tmpArr = array(
+				$field => $sortTmp
+			);
+		} else if (is_array($fields)) {//输入数组组合索引删除不可以单独删除组合索引的一个
+			foreach ($fields as $k => $v) {
+				if (is_integer($k)) {
+					if (strtolower($sort) == 'desc') {
+						$sortTmp = -1;
+					} else if (strtolower($sort) == 'asc') {
+						$sortTmp = 1;
+					} else {
+						return false;
+					}
+					$tmpArr[$v] = $sortTmp;					
+				} else {
+					if (strtolower($v) == 'desc') {
+						$sortTmp = -1;
+					} else if (strtolower($v) == 'asc') {
+						$sortTmp = 1;
+					} else {
+						continue;
+					}
+
+					$tmpArr[$k] = $sortTmp;
+				}
+			}
+		}
+
+		
+		return $collection -> ensureIndex($tmpArr, $opts);
+	}
+
+	public function delIndexes($collectionName, $fields) {
+		$collection = $this->_getCollection($collectionName);
+		return $collection->deleteIndex($fields);
+	}
+
+	/**
+	 * 选择数据库
+	 *
+	 * @param string $dbname 数据库名
+	 *
+	 * @return null
+	 */
+	public function selectDb($dbname) {
+		$this->_db = $this->_mongo->selectDB($dbname);
+	}
+	/**
+	 * 删除数据库
+	 *
+	 * @param  string $dbname default empty
+	 * @return null
+	 */
+	public function dropDb($dbname) {
+		return $this->_mongo->dropDB($dbname);
+	}
+	/**
+	 * 获取所有的数据库
+	 *
+	 * @param boolean $bool default false 默认返回对象，如果为true，仅仅返回数据库名字的一个数组
+	 *
+	 * @return array
+	 */
+	public function getAllDb($bool = false) {
+		$datas = $this->_mongo->listDBs();
+		if ($bool && isset($datas['databases']) && !empty($datas['databases'])) {
+			$dbnames = array();
+			foreach ($databases as $database) {
+				$dbnames[] = $database['name'];
+			}
+			return $dbnames;
+		} else {
+			return $datas;
+		}
+	}
+	/**
+	 * 关闭数据库连接
+	 *
+	 * @return void
+	 */
+	public function closeDb() {
+		$this->_mongo->close();
+	}
+	/**
+	 * 获取操作符
+	 *
+	 * @param string $cmd 操作符，默认为 $
+	 *
+	 * @return string
+	 */
+	public function getCmd($cmd ='') {
+		$tmpCmd = $cmd;
+		if (!empty($cmd) && array_key_exists($cmd, $this->_conMap)) {
+			$tmpCmd = $this->_conMap["$cmd"];
+		}
+		return $this->_cmd.$tmpCmd;
+	}
+	/**
+	 * 获取最后的错误信息
+	 *
+	 * @return array
+	 */
+	public function getError() {
+		return $this->_db->lastError();
+	}
+	/**
+	 * 获取对象集合
+	 *
+	 * @param string $collName 集合名称
+	 *
+	 * @return object
+	 */
+	private function _getCollection($collName) {
+		return $this->_db->selectCollection($collName);
+	}
+	 /**
+     * 解析数据中的'_id'
+     * 
+     * @param string $arr 需要转换的参数
+     * 
+     * @return array
+     */
+    private function _parseId($arr){
+        if(isset($arr['_id'])){
+            $arr['_id'] = new MongoId($arr['_id']);
+        }
+        return $arr;
+    }
+    private function _parseArr($arr) {
+    	if (isset($arr['_id']) && is_object($arr['_id'])) {
+    		$ret = (array)$arr['_id'];
+    		$arr['_id'] = $ret['$id'];
+    	}
+
+    	return $arr;
+    }
+
+}
+?>
